@@ -16,6 +16,7 @@
 //    #include <cstdio> // Em C++
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 
 // Headers abaixo são específicos de C++
 #include <map>
@@ -24,8 +25,10 @@
 #include <vector>
 #include <fstream>
 #include <sstream>
+#include <iostream>
 #include <stdexcept>
 #include <algorithm>
+#include <random>
 
 // Headers das bibliotecas OpenGL
 #include <glad/glad.h>   // Criação de contexto OpenGL 3.3
@@ -42,34 +45,9 @@
 // Headers locais, definidos na pasta "include/"
 #include "utils.h"
 #include "matrices.h"
-
-// Estrutura que representa um modelo geométrico carregado a partir de um
-// arquivo ".obj". Veja https://en.wikipedia.org/wiki/Wavefront_.obj_file .
-struct ObjModel
-{
-    tinyobj::attrib_t                 attrib;
-    std::vector<tinyobj::shape_t>     shapes;
-    std::vector<tinyobj::material_t>  materials;
-
-    // Este construtor lê o modelo de um arquivo utilizando a biblioteca tinyobjloader.
-    // Veja: https://github.com/syoyo/tinyobjloader
-    ObjModel(const char* filename, const char* basepath = NULL, bool triangulate = true)
-    {
-        printf("Carregando modelo \"%s\"... ", filename);
-
-        std::string err;
-        bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &err, filename, basepath, triangulate);
-
-        if (!err.empty())
-            fprintf(stderr, "\n%s\n", err.c_str());
-
-        if (!ret)
-            throw std::runtime_error("Erro ao carregar modelo.");
-
-        printf("OK.\n");
-    }
-};
-
+#include "object.h"
+#include "block.h"
+#include "tetris.h"
 
 // Declaração de funções utilizadas para pilha de matrizes de modelagem.
 void PushMatrix(glm::mat4 M);
@@ -77,10 +55,11 @@ void PopMatrix(glm::mat4& M);
 
 // Declaração de várias funções utilizadas em main().  Essas estão definidas
 // logo após a definição de main() neste arquivo.
-void BuildTrianglesAndAddToVirtualScene(ObjModel*); // Constrói representação de um ObjModel como malha de triângulos para renderização
+SceneObject* BuildTrianglesAndAddToVirtualScene(ObjModel* model, std::string key); // Constrói representação de um ObjModel como malha de triângulos para renderização
 void ComputeNormals(ObjModel* model); // Computa normais de um ObjModel, caso não existam.
 void LoadShadersFromFiles(); // Carrega os shaders de vértice e fragmento, criando um programa de GPU
 void DrawVirtualObject(const char* object_name); // Desenha um objeto armazenado em g_VirtualScene
+void DrawAllObjects();
 GLuint LoadShader_Vertex(const char* filename);   // Carrega um vertex shader
 GLuint LoadShader_Fragment(const char* filename); // Carrega um fragment shader
 void LoadShader(const char* filename, GLuint shader_id); // Função utilizada pelas duas acima
@@ -114,16 +93,8 @@ void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 void CursorPosCallback(GLFWwindow* window, double xpos, double ypos);
 void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
 
-// Definimos uma estrutura que armazenará dados necessários para renderizar
-// cada objeto da cena virtual.
-struct SceneObject
-{
-    std::string  name;        // Nome do objeto
-    void*        first_index; // Índice do primeiro vértice dentro do vetor indices[] definido em BuildTrianglesAndAddToVirtualScene()
-    int          num_indices; // Número de índices do objeto dentro do vetor indices[] definido em BuildTrianglesAndAddToVirtualScene()
-    GLenum       rendering_mode; // Modo de rasterização (GL_TRIANGLES, GL_TRIANGLE_STRIP, etc.)
-    GLuint       vertex_array_object_id; // ID do VAO onde estão armazenados os atributos do modelo
-};
+void ProcessGameTick();
+bool hasCollided();
 
 // Abaixo definimos variáveis globais utilizadas em várias funções do código.
 
@@ -131,7 +102,7 @@ struct SceneObject
 // (map).  Veja dentro da função BuildTrianglesAndAddToVirtualScene() como que são incluídos
 // objetos dentro da variável g_VirtualScene, e veja na função main() como
 // estes são acessados.
-std::map<std::string, SceneObject> g_VirtualScene;
+std::map<std::string, SceneObject*> g_VirtualScene;
 
 // Pilha que guardará as matrizes de modelagem.
 std::stack<glm::mat4>  g_MatrixStack;
@@ -172,6 +143,31 @@ bool g_UsePerspectiveProjection = true;
 // Variável que controla se o texto informativo será mostrado na tela.
 bool g_ShowInfoText = true;
 
+float g_LimitHX =  0.4f;
+float g_LimitLX = -0.4f;
+float g_LimitHY =  1.5f;
+float g_LimitLY =  0.0f;
+float g_LimitHZ =  0.4f;
+float g_LimitLZ = -0.4f;
+
+float g_BlockBorder = 0.005f;
+
+float g_StartPositionX = 0.0f;
+float g_StartPositionY = 1.5f;
+float g_StartPositionZ = 0.0f;
+
+float g_CurrentPositionX = g_StartPositionX;
+float g_CurrentPositionY = g_StartPositionY;
+float g_CurrentPositionZ = g_StartPositionZ;
+
+double g_LastTick    = 0.0f;
+double g_Interval    = 0.25f;
+double g_BlockResize = 0.1f;
+
+Block *g_CurrentBlock  = NULL;
+MOVE   g_LastMove      = NONE;
+int    g_IdCounter     = 0;
+
 // Variáveis que definem um programa de GPU (shaders). Veja função LoadShadersFromFiles().
 GLuint vertex_shader_id;
 GLuint fragment_shader_id;
@@ -191,6 +187,8 @@ int main(int argc, char* argv[])
         fprintf(stderr, "ERROR: glfwInit() failed.\n");
         std::exit(EXIT_FAILURE);
     }
+
+    srand(time(NULL));
 
     // Definimos o callback para impressão de erros da GLFW no terminal
     glfwSetErrorCallback(ErrorCallback);
@@ -244,30 +242,22 @@ int main(int argc, char* argv[])
 
     printf("GPU: %s, %s, OpenGL %s, GLSL %s\n", vendor, renderer, glversion, glslversion);
 
-    // Carregamos os shaders de vértices e de fragmentos que serão utilizados
-    // para renderização. Veja slide 216 do documento
-    // "Aula_03_Rendering_Pipeline_Grafico.pdf".
-    //
     LoadShadersFromFiles();
 
     // Construímos a representação de objetos geométricos através de malhas de triângulos
-    ObjModel spheremodel("../../data/sphere.obj");
-    ComputeNormals(&spheremodel);
-    BuildTrianglesAndAddToVirtualScene(&spheremodel);
+    BlockModel *blockmodel = getRandomBlockModel();
+    ComputeNormals(blockmodel);
+    g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, "b" + (g_IdCounter++));
+    g_CurrentBlock->intid = MOVING_BLOCK;
+    g_CurrentBlock->lastMatrix = Matrix_Translate(g_CurrentPositionX, g_CurrentPositionY, g_CurrentPositionZ)
+               * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
 
-    ObjModel bunnymodel("../../data/bunny.obj");
-    ComputeNormals(&bunnymodel);
-    BuildTrianglesAndAddToVirtualScene(&bunnymodel);
-
-    ObjModel planemodel("../../data/plane.obj");
+    ObjModel planemodel = ObjModel("../../data/cube.obj");
     ComputeNormals(&planemodel);
-    BuildTrianglesAndAddToVirtualScene(&planemodel);
-
-    if ( argc > 1 )
-    {
-        ObjModel model(argv[1]);
-        BuildTrianglesAndAddToVirtualScene(&model);
-    }
+    SceneObject* plane  = BuildTrianglesAndAddToVirtualScene(&planemodel, "plane");
+    plane->intid = PLANE;
+    plane->lastMatrix   = Matrix_Translate(g_LimitLX, g_LimitLY - 0.1, g_LimitLZ)
+                        * Matrix_Scale((g_LimitHX - g_LimitLX), 0.1, (g_LimitHZ - g_LimitLZ));
 
     // Inicializamos o código para renderização de texto.
     TextRendering_Init();
@@ -290,7 +280,6 @@ int main(int argc, char* argv[])
     while (!glfwWindowShouldClose(window))
     {
         // Aqui executamos as operações de renderização
-
         // Definimos a cor do "fundo" do framebuffer como branco.  Tal cor é
         // definida como coeficientes RGBA: Red, Green, Blue, Alpha; isto é:
         // Vermelho, Verde, Azul, Alpha (valor de transparência).
@@ -361,67 +350,24 @@ int main(int argc, char* argv[])
 
         glm::mat4 model = Matrix_Identity(); // Transformação identidade de modelagem
 
-        // Enviamos as matrizes "view" e "projection" para a placa de vídeo
-        // (GPU). Veja o arquivo "shader_vertex.glsl", onde estas são
-        // efetivamente aplicadas em todos os pontos.
         glUniformMatrix4fv(view_uniform       , 1 , GL_FALSE , glm::value_ptr(view));
         glUniformMatrix4fv(projection_uniform , 1 , GL_FALSE , glm::value_ptr(projection));
 
-        #define SPHERE 0
-        #define BUNNY  1
-        #define PLANE  2
-
-        // Desenhamos o modelo da esfera
-        model = Matrix_Translate(-1.0f,0.0f,0.0f);
+        // Desenhamos o modelo da peca
+        model = Matrix_Translate(g_CurrentPositionX, g_CurrentPositionY, g_CurrentPositionZ)
+                   * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
         glUniformMatrix4fv(model_uniform, 1 , GL_FALSE , glm::value_ptr(model));
-        glUniform1i(object_id_uniform, SPHERE);
-        DrawVirtualObject("sphere");
+        glUniform1i(object_id_uniform, g_CurrentBlock->intid);
+        g_CurrentBlock->lastMatrix = model;
+        DrawVirtualObject((g_CurrentBlock->name).c_str());
 
-        // Desenhamos o modelo do coelho
-        model = Matrix_Translate(1.0f,0.0f,0.0f)
-              * Matrix_Rotate_Z(g_AngleZ)
-              * Matrix_Rotate_Y(g_AngleY)
-              * Matrix_Rotate_X(g_AngleX);
-        glUniformMatrix4fv(model_uniform, 1 , GL_FALSE , glm::value_ptr(model));
-        glUniform1i(object_id_uniform, BUNNY);
-        DrawVirtualObject("bunny");
+        DrawAllObjects();
 
-        // Desenhamos o modelo do plano
-        model = Matrix_Translate(0.0f,-1.0f,0.0f)
-              * Matrix_Scale(1.0f, 2.0f, 2.0f);
-        glUniformMatrix4fv(model_uniform, 1 , GL_FALSE , glm::value_ptr(model));
-        glUniform1i(object_id_uniform, PLANE);
-        DrawVirtualObject("plane");
+        ProcessGameTick();
 
-        // Pegamos um vértice com coordenadas de modelo (0.5, 0.5, 0.5, 1) e o
-        // passamos por todos os sistemas de coordenadas armazenados nas
-        // matrizes the_model, the_view, e the_projection; e escrevemos na tela
-        // as matrizes e pontos resultantes dessas transformações.
-        //glm::vec4 p_model(0.5f, 0.5f, 0.5f, 1.0f);
-        //TextRendering_ShowModelViewProjection(window, projection, view, model, p_model);
-
-        // Imprimimos na tela os ângulos de Euler que controlam a rotação do
-        // terceiro cubo.
-        TextRendering_ShowEulerAngles(window);
-
-        // Imprimimos na informação sobre a matriz de projeção sendo utilizada.
         TextRendering_ShowProjection(window);
-
-        // Imprimimos na tela informação sobre o número de quadros renderizados
-        // por segundo (frames per second).
         TextRendering_ShowFramesPerSecond(window);
-
-        // O framebuffer onde a OpenGL executa as operações de renderização não
-        // é o mesmo que está sendo mostrado para o usuário, caso contrário
-        // seria possível ver artefatos conhecidos como "screen tearing". A
-        // chamada abaixo faz a troca dos buffers, mostrando para o usuário
-        // tudo que foi renderizado pelas funções acima.
         glfwSwapBuffers(window);
-
-        // Verifica com o sistema operacional se houve alguma interação do
-        // usuário (teclado, mouse, ...). Caso positivo, as funções de callback
-        // definidas anteriormente usando glfwSet*Callback() serão chamadas
-        // pela biblioteca GLFW.
         glfwPollEvents();
     }
 
@@ -432,69 +378,80 @@ int main(int argc, char* argv[])
     return 0;
 }
 
-// Função que desenha um objeto armazenado em g_VirtualScene. Veja definição
-// dos objetos na função BuildTrianglesAndAddToVirtualScene().
+void ProcessGameTick()
+{
+  // Tick control
+  if ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval)
+  {
+    printf("Tick.\n");
+    printf("%d\n", g_VirtualScene.size());
+
+    g_LastTick = clock();
+    g_CurrentPositionY -= (1 * g_BlockResize);
+
+    // Se alcançou o fundo, gera nova
+    // Trocar por COLISAO COLISÃO
+    if (hasCollided())
+    {
+      g_CurrentBlock->intid = STATIC_BLOCK;
+
+      g_CurrentPositionX = g_StartPositionX;
+      g_CurrentPositionY = g_StartPositionY;
+      g_CurrentPositionZ = g_StartPositionZ;
+
+      BlockModel *blockmodel = getRandomBlockModel();
+      ComputeNormals(blockmodel);
+      g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, "b" + (g_IdCounter++));
+      g_CurrentBlock->intid = MOVING_BLOCK;
+    }
+  }
+}
+
+bool hasCollided()
+{
+  if (g_CurrentPositionY < g_LimitLY)
+    return true;
+  else
+    return false;
+}
+
+void DrawAllObjects()
+{
+  for(auto const &it : g_VirtualScene)
+  {
+    SceneObject *obj = it.second;
+
+    glm::mat4 model = obj->lastMatrix;
+    glUniformMatrix4fv(model_uniform, 1 , GL_FALSE , glm::value_ptr(model));
+    glUniform1i(object_id_uniform, obj->intid);
+    DrawVirtualObject((obj->name).c_str());
+  }
+}
+
 void DrawVirtualObject(const char* object_name)
 {
-    // "Ligamos" o VAO. Informamos que queremos utilizar os atributos de
-    // vértices apontados pelo VAO criado pela função BuildTrianglesAndAddToVirtualScene(). Veja
-    // comentários detalhados dentro da definição de BuildTrianglesAndAddToVirtualScene().
-    glBindVertexArray(g_VirtualScene[object_name].vertex_array_object_id);
+    glBindVertexArray(g_VirtualScene[object_name]->vertex_array_object_id);
 
-    // Pedimos para a GPU rasterizar os vértices dos eixos XYZ
-    // apontados pelo VAO como linhas. Veja a definição de
-    // g_VirtualScene[""] dentro da função BuildTrianglesAndAddToVirtualScene(), e veja
-    // a documentação da função glDrawElements() em
-    // http://docs.gl/gl3/glDrawElements.
     glDrawElements(
-        g_VirtualScene[object_name].rendering_mode,
-        g_VirtualScene[object_name].num_indices,
+        g_VirtualScene[object_name]->rendering_mode,
+        g_VirtualScene[object_name]->num_indices,
         GL_UNSIGNED_INT,
-        (void*)g_VirtualScene[object_name].first_index
+        (void*)g_VirtualScene[object_name]->first_index
     );
 
-    // "Desligamos" o VAO, evitando assim que operações posteriores venham a
-    // alterar o mesmo. Isso evita bugs.
     glBindVertexArray(0);
 }
 
-// Função que carrega os shaders de vértices e de fragmentos que serão
-// utilizados para renderização. Veja slide 216 do documento
-// "Aula_03_Rendering_Pipeline_Grafico.pdf".
-//
 void LoadShadersFromFiles()
 {
-    // Note que o caminho para os arquivos "shader_vertex.glsl" e
-    // "shader_fragment.glsl" estão fixados, sendo que assumimos a existência
-    // da seguinte estrutura no sistema de arquivos:
-    //
-    //    + FCG_Lab_01/
-    //    |
-    //    +--+ bin/
-    //    |  |
-    //    |  +--+ Release/  (ou Debug/ ou Linux/)
-    //    |     |
-    //    |     o-- main.exe
-    //    |
-    //    +--+ src/
-    //       |
-    //       o-- shader_vertex.glsl
-    //       |
-    //       o-- shader_fragment.glsl
-    //
     vertex_shader_id = LoadShader_Vertex("../../src/shader_vertex.glsl");
     fragment_shader_id = LoadShader_Fragment("../../src/shader_fragment.glsl");
 
-    // Deletamos o programa de GPU anterior, caso ele exista.
     if ( program_id != 0 )
         glDeleteProgram(program_id);
 
-    // Criamos um programa de GPU utilizando os shaders carregados acima.
     program_id = CreateGpuProgram(vertex_shader_id, fragment_shader_id);
 
-    // Buscamos o endereço das variáveis definidas dentro do Vertex Shader.
-    // Utilizaremos estas variáveis para enviar dados para a placa de vídeo
-    // (GPU)! Veja arquivo "shader_vertex.glsl" e "shader_fragment.glsl".
     model_uniform           = glGetUniformLocation(program_id, "model"); // Variável da matriz "model"
     view_uniform            = glGetUniformLocation(program_id, "view"); // Variável da matriz "view" em shader_vertex.glsl
     projection_uniform      = glGetUniformLocation(program_id, "projection"); // Variável da matriz "projection" em shader_vertex.glsl
@@ -587,8 +544,10 @@ void ComputeNormals(ObjModel* model)
 }
 
 // Constrói triângulos para futura renderização a partir de um ObjModel.
-void BuildTrianglesAndAddToVirtualScene(ObjModel* model)
+SceneObject* BuildTrianglesAndAddToVirtualScene(ObjModel* model, std::string key)
 {
+    SceneObject* theobject = new SceneObject;
+
     GLuint vertex_array_object_id;
     glGenVertexArrays(1, &vertex_array_object_id);
     glBindVertexArray(vertex_array_object_id);
@@ -645,14 +604,15 @@ void BuildTrianglesAndAddToVirtualScene(ObjModel* model)
 
         size_t last_index = indices.size() - 1;
 
-        SceneObject theobject;
-        theobject.name           = model->shapes[shape].name;
-        theobject.first_index    = (void*)first_index; // Primeiro índice
-        theobject.num_indices    = last_index - first_index + 1; // Número de indices
-        theobject.rendering_mode = GL_TRIANGLES;       // Índices correspondem ao tipo de rasterização GL_TRIANGLES.
-        theobject.vertex_array_object_id = vertex_array_object_id;
+        theobject->name = key;
+        theobject->first_index    = (void*)first_index; // Primeiro índice
+        theobject->num_indices    = last_index - first_index + 1; // Número de indices
+        theobject->rendering_mode = GL_TRIANGLES;       // Índices correspondem ao tipo de rasterização GL_TRIANGLES.
+        theobject->vertex_array_object_id = vertex_array_object_id;
 
-        g_VirtualScene[model->shapes[shape].name] = theobject;
+        std::cout << (theobject->name) << std::endl;
+
+        g_VirtualScene[key] = theobject;
     }
 
     GLuint VBO_model_coefficients_id;
@@ -702,6 +662,8 @@ void BuildTrianglesAndAddToVirtualScene(ObjModel* model)
     // glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); // XXX Errado!
 
     glBindVertexArray(0);
+
+    return theobject;
 }
 
 // Carrega um Vertex Shader de um arquivo. Veja definição de LoadShader() abaixo.
@@ -1018,44 +980,42 @@ void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
 void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mod)
 {
     // Se o usuário pressionar a tecla ESC, fechamos a janela.
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && g_LastMove == NONE)
         glfwSetWindowShouldClose(window, GL_TRUE);
 
-    // O código abaixo implementa a seguinte lógica:
-    //   Se apertar tecla X       então g_AngleX += delta;
-    //   Se apertar tecla shift+X então g_AngleX -= delta;
-    //   Se apertar tecla Y       então g_AngleY += delta;
-    //   Se apertar tecla shift+Y então g_AngleY -= delta;
-    //   Se apertar tecla Z       então g_AngleZ += delta;
-    //   Se apertar tecla shift+Z então g_AngleZ -= delta;
+    if (key == GLFW_KEY_W && action == GLFW_PRESS && g_LastMove == NONE)
+        g_LastMove = ZLEFT;
 
-    float delta = 3.141592 / 16; // 22.5 graus, em radianos.
+    if (key == GLFW_KEY_A && action == GLFW_PRESS && g_LastMove == NONE)
+        g_LastMove = XLEFT;
 
-    if (key == GLFW_KEY_X && action == GLFW_PRESS)
-    {
-        g_AngleX += (mod & GLFW_MOD_SHIFT) ? -delta : delta;
-    }
+    if (key == GLFW_KEY_S && action == GLFW_PRESS && g_LastMove == NONE)
+        g_LastMove = ZRIGHT;
 
-    if (key == GLFW_KEY_Y && action == GLFW_PRESS)
-    {
-        g_AngleY += (mod & GLFW_MOD_SHIFT) ? -delta : delta;
-    }
-    if (key == GLFW_KEY_Z && action == GLFW_PRESS)
-    {
-        g_AngleZ += (mod & GLFW_MOD_SHIFT) ? -delta : delta;
-    }
+    if (key == GLFW_KEY_D && action == GLFW_PRESS && g_LastMove == NONE)
+        g_LastMove = XRIGHT;
 
-    // Se o usuário apertar a tecla espaço, resetamos os ângulos de Euler para zero.
-    if (key == GLFW_KEY_SPACE && action == GLFW_PRESS)
-    {
-        g_AngleX = 0.0f;
-        g_AngleY = 0.0f;
-        g_AngleZ = 0.0f;
-        g_ForearmAngleX = 0.0f;
-        g_ForearmAngleZ = 0.0f;
-        g_TorsoPositionX = 0.0f;
-        g_TorsoPositionY = 0.0f;
+    switch (g_LastMove) {
+      case XLEFT:
+        if (g_CurrentPositionX > g_LimitLX)
+          g_CurrentPositionX -= (1 * g_BlockResize);
+        break;
+      case XRIGHT:
+        if (g_CurrentPositionX < (g_LimitHX - (1 * g_BlockResize)))
+          g_CurrentPositionX += (1 * g_BlockResize);
+        break;
+      case ZLEFT:
+        if (g_CurrentPositionZ > g_LimitLZ)
+          g_CurrentPositionZ -= (1 * g_BlockResize);
+        break;
+      case ZRIGHT:
+        if (g_CurrentPositionZ < (g_LimitHZ - (1 * g_BlockResize)))
+          g_CurrentPositionZ += (1 * g_BlockResize);
+        break;
+      default:
+        break;
     }
+    g_LastMove = NONE;
 
     // Se o usuário apertar a tecla P, utilizamos projeção perspectiva.
     if (key == GLFW_KEY_P && action == GLFW_PRESS)
