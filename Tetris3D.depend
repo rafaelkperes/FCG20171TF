@@ -24,7 +24,7 @@
 	<inttypes.h>
 	<stdint.h>
 
-1499543423 source:d:\documents\fcg20171tf\src\main.cpp
+1499549174 source:d:\documents\fcg20171tf\src\main.cpp
 	<cstdio>
 	<cstdlib>
 	<ctime>
@@ -44,6 +44,7 @@
 	<glm/vec4.hpp>
 	<glm/gtc/type_ptr.hpp>
 	<tiny_obj_loader.h>
+	<stb_image.h>
 	"utils.h"
 	"matrices.h"
 	"object.h"
@@ -553,4 +554,23 @@
 	<string>
 
 1499545848 d:\documents\fcg20171tf\include\tetris.h
+
+1499548355 d:\documents\fcg20171tf\include\stb_image.h
+	"stb_image.h"
+	<stdio.h>
+	<stdarg.h>
+	<stddef.h>
+	<stdlib.h>
+	<string.h>
+	<limits.h>
+	<math.h>
+	<stdio.h>
+	<assert.h>
+	<stdint.h>
+	<emmintrin.h>
+	<intrin.h>
+	<arm_neon.h>
+
+1499548364 source:d:\documents\fcg20171tf\src\stb_image.cpp
+	"stb_image.h"
 

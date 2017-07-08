@@ -37,7 +37,7 @@ struct ObjModel
 
         if (!ret)
             throw std::runtime_error("Erro ao carregar modelo.");
-            
+
         printf("OK.\n");
     }
 };
@@ -51,8 +51,10 @@ struct SceneObject
     int          num_indices; // Número de índices do objeto dentro do vetor indices[] definido em BuildTrianglesAndAddToVirtualScene()
     GLenum       rendering_mode; // Modo de rasterização (GL_TRIANGLES, GL_TRIANGLE_STRIP, etc.)
     GLuint       vertex_array_object_id; // ID do VAO onde estão armazenados os atributos do modelo
+    glm::vec3    bbox_min; // Axis-Aligned Bounding Box do objeto
+    glm::vec3    bbox_max;
     glm::mat4    lastMatrix;
-    int          intid;
+    int          intid;    
 };
 
 #endif

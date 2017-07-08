@@ -42,6 +42,8 @@
 // Headers da biblioteca para carregar modelos obj
 #include <tiny_obj_loader.h>
 
+#include <stb_image.h>
+
 // Headers locais, definidos na pasta "include/"
 #include "utils.h"
 #include "matrices.h"
@@ -60,6 +62,7 @@ void ComputeNormals(ObjModel* model); // Computa normais de um ObjModel, caso n�
 void LoadShadersFromFiles(); // Carrega os shaders de vértice e fragmento, criando um programa de GPU
 void DrawVirtualObject(const char* object_name); // Desenha um objeto armazenado em g_VirtualScene
 void DrawAllObjects();
+void LoadTextureImage(const char* filename); // Função que carrega imagens de textura
 GLuint LoadShader_Vertex(const char* filename);   // Carrega um vertex shader
 GLuint LoadShader_Fragment(const char* filename); // Carrega um fragment shader
 void LoadShader(const char* filename, GLuint shader_id); // Função utilizada pelas duas acima
@@ -143,6 +146,8 @@ bool g_UsePerspectiveProjection = true;
 // Variável que controla se o texto informativo será mostrado na tela.
 bool g_ShowInfoText = true;
 
+GLuint g_NumLoadedTextures = 0;
+
 float g_LimitHX =  0.4f;
 float g_LimitLX = -0.4f;
 float g_LimitHY =  1.5f;
@@ -161,12 +166,13 @@ float g_CurrentPositionY = g_StartPositionY;
 float g_CurrentPositionZ = g_StartPositionZ;
 
 double g_LastTick    = 0.0f;
-double g_Interval    = 0.25f;
+double g_Interval    = 0.5f;
 double g_BlockResize = 0.1f;
 
 Block *g_CurrentBlock  = NULL;
 MOVE   g_LastMove      = NONE;
 int    g_IdCounter     = 0;
+bool   g_IsPaused      = true;
 
 // Variáveis que definem um programa de GPU (shaders). Veja função LoadShadersFromFiles().
 GLuint vertex_shader_id;
@@ -176,6 +182,8 @@ GLint model_uniform;
 GLint view_uniform;
 GLint projection_uniform;
 GLint object_id_uniform;
+GLint bbox_min_uniform;
+GLint bbox_max_uniform;
 
 int main(int argc, char* argv[])
 {
@@ -243,6 +251,15 @@ int main(int argc, char* argv[])
     printf("GPU: %s, %s, OpenGL %s, GLSL %s\n", vendor, renderer, glversion, glslversion);
 
     LoadShadersFromFiles();
+
+    // Carregamos duas imagens para serem utilizadas como textura
+    LoadTextureImage("../../data/grass.jpg");      // TextureImage0
+    LoadTextureImage("../../data/dirt.jpg");       // TextureImage1
+    LoadTextureImage("../../data/wood.jpg");       // TextureImage2
+    LoadTextureImage("../../data/moss.png");       // TextureImage3
+    LoadTextureImage("../../data/plank.png");      // TextureImage4
+    LoadTextureImage("../../data/crate.jpg");      // TextureImage5
+    LoadTextureImage("../../data/portal.jpg");     // TextureImage6
 
     // Construímos a representação de objetos geométricos através de malhas de triângulos
     BlockModel *blockmodel = getRandomBlockModel();
@@ -381,7 +398,7 @@ int main(int argc, char* argv[])
 void ProcessGameTick()
 {
   // Tick control
-  if ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval)
+  if (!g_IsPaused && ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval))
   {
     printf("Tick.\n");
     printf("%d\n", g_VirtualScene.size());
@@ -430,16 +447,75 @@ void DrawAllObjects()
 
 void DrawVirtualObject(const char* object_name)
 {
-    glBindVertexArray(g_VirtualScene[object_name]->vertex_array_object_id);
+    SceneObject *obj = g_VirtualScene[object_name];
+
+    glBindVertexArray(obj->vertex_array_object_id);
+
+    glm::vec3 bbox_min = obj->bbox_min;
+    glm::vec3 bbox_max = obj->bbox_max;
+    glUniform4f(bbox_min_uniform, bbox_min.x, bbox_min.y, bbox_min.z, 1.0f);
+    glUniform4f(bbox_max_uniform, bbox_max.x, bbox_max.y, bbox_max.z, 1.0f);
 
     glDrawElements(
-        g_VirtualScene[object_name]->rendering_mode,
-        g_VirtualScene[object_name]->num_indices,
+        obj->rendering_mode,
+        obj->num_indices,
         GL_UNSIGNED_INT,
-        (void*)g_VirtualScene[object_name]->first_index
+        (void*)obj->first_index
     );
 
     glBindVertexArray(0);
+}
+
+// Função que carrega uma imagem para ser utilizada como textura
+void LoadTextureImage(const char* filename)
+{
+    printf("Carregando imagem \"%s\"... ", filename);
+
+    // Primeiro fazemos a leitura da imagem do disco
+    stbi_set_flip_vertically_on_load(true);
+    int width;
+    int height;
+    int channels;
+    unsigned char *data = stbi_load(filename, &width, &height, &channels, 3);
+
+    if ( data == NULL )
+    {
+        fprintf(stderr, "ERROR: Cannot open image file \"%s\".\n", filename);
+        std::exit(EXIT_FAILURE);
+    }
+
+    printf("OK (%dx%d).\n", width, height);
+
+    // Agora criamos objetos na GPU com OpenGL para armazenar a textura
+    GLuint texture_id;
+    GLuint sampler_id;
+    glGenTextures(1, &texture_id);
+    glGenSamplers(1, &sampler_id);
+
+    // Veja slide 160 do documento "Aula_20_e_21_Mapeamento_de_Texturas.pdf"
+    glSamplerParameteri(sampler_id, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(sampler_id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Parâmetros de amostragem da textura. Falaremos sobre eles em uma próxima aula.
+    glSamplerParameteri(sampler_id, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glSamplerParameteri(sampler_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // Agora enviamos a imagem lida do disco para a GPU
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+
+    GLuint textureunit = g_NumLoadedTextures;
+    glActiveTexture(GL_TEXTURE0 + textureunit);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindSampler(textureunit, sampler_id);
+
+    stbi_image_free(data);
+
+    g_NumLoadedTextures += 1;
 }
 
 void LoadShadersFromFiles()
@@ -979,6 +1055,9 @@ void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
 // tecla do teclado. Veja http://www.glfw.org/docs/latest/input_guide.html#input_key
 void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mod)
 {
+    if (key == GLFW_KEY_ENTER && action == GLFW_PRESS)
+        g_IsPaused = !g_IsPaused;
+
     // Se o usuário pressionar a tecla ESC, fechamos a janela.
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && g_LastMove == NONE)
         glfwSetWindowShouldClose(window, GL_TRUE);
