@@ -63,6 +63,7 @@ void main()
     // Coordenadas de textura U e V
     float U = 0.0;
     float V = 0.0;
+    float tol = 0.02;
 
     if ( object_id == MOVING_BLOCK )
     {
@@ -75,10 +76,28 @@ void main()
         float minz = bbox_min.z;
         float maxz = bbox_max.z;
 
-        U = (position_model.x - minx) / (maxx - minx);
-        V = (position_model.y - miny) / (maxy - miny);
+        if ((position_model.x <= miny + tol && position_model.x <= minz + tol)
+         || (position_model.x >= maxy - tol && position_model.x >= maxz - tol))
+        {
+            // map by z y
+            U = (position_model.z - minz) / (maxz - minz);
+            V = (position_model.y - miny) / (maxy - miny);
+        }
+        else if ((position_model.y <= minx + tol && position_model.y <= minz + tol)
+              || (position_model.y >= maxx - tol && position_model.y >= maxz - tol))
+        {
+            // map by x z
+            U = (position_model.x - minx) / (maxx - minx);
+            V = (position_model.z - minz) / (maxz - minz);
+        }
+        else
+        {
+            // map by x y
+            U = (position_model.x - minx) / (maxx - minx);
+            V = (position_model.y - miny) / (maxy - miny);
+        }
 
-        Kd = texture(TextureImage1, vec2(U,V)).rgb;
+        Kd = texture(TextureImage3, vec2(U,V)).rgb;
         //Kd = vec3(0.8, 0.4, 0.08);
         Ks = vec3(0.0,0.0,0.0);
         Ka = Kd/2;
@@ -95,19 +114,47 @@ void main()
         float minz = bbox_min.z;
         float maxz = bbox_max.z;
 
-        U = (position_model.x - minx) / (maxx - minx);
-        V = (position_model.y - miny) / (maxy - miny);
+        if ((position_model.x <= miny + tol && position_model.x <= minz + tol)
+         || (position_model.x >= maxy - tol && position_model.x >= maxz - tol))
+        {
+            // map by z y
+            U = (position_model.z - minz) / (maxz - minz);
+            V = (position_model.y - miny) / (maxy - miny);
+        }
+        else if ((position_model.y <= minx + tol && position_model.y <= minz + tol)
+              || (position_model.y >= maxx - tol && position_model.y >= maxz - tol))
+        {
+            // map by x z
+            U = (position_model.x - minx) / (maxx - minx);
+            V = (position_model.z - minz) / (maxz - minz);
+        }
+        else
+        {
+            // map by x y
+            U = (position_model.x - minx) / (maxx - minx);
+            V = (position_model.y - miny) / (maxy - miny);
+        }
 
-        Kd = texture(TextureImage1, vec2(U,V)).rgb;
-
-        //Kd = vec3(0.08, 0.4, 0.8);
+        Kd = texture(TextureImage3, vec2(U,V)).rgb;
         Ks = vec3(0.8, 0.8, 0.8);
         Ka = Kd/2;
         q = 32.0;
     }
     else if ( object_id == PLANE )
     {
-        Kd = vec3(0.2, 0.2, 0.2);
+        float minx = bbox_min.x;
+        float maxx = bbox_max.x;
+
+        float miny = bbox_min.y;
+        float maxy = bbox_max.y;
+
+        float minz = bbox_min.z;
+        float maxz = bbox_max.z;
+
+        U = (position_model.x - minx) / (maxx - minx);
+        V = (position_model.z - minz) / (maxz - minz);
+
+        Kd = texture(TextureImage1, vec2(U,V)).rgb;
         Ks = vec3(0.3, 0.3, 0.3);
         Ka = vec3(0.0,0.0,0.0);
         q = 20.0;

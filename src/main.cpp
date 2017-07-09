@@ -23,6 +23,7 @@
 #include <stack>
 #include <string>
 #include <vector>
+#include <limits>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -166,7 +167,7 @@ float g_CurrentPositionY = g_StartPositionY;
 float g_CurrentPositionZ = g_StartPositionZ;
 
 double g_LastTick    = 0.0f;
-double g_Interval    = 0.5f;
+double g_Interval    = 0.25f;
 double g_BlockResize = 0.1f;
 
 Block *g_CurrentBlock  = NULL;
@@ -264,7 +265,9 @@ int main(int argc, char* argv[])
     // Construímos a representação de objetos geométricos através de malhas de triângulos
     BlockModel *blockmodel = getRandomBlockModel();
     ComputeNormals(blockmodel);
-    g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, "b" + (g_IdCounter++));
+    char numstr[22]; // enough to hold all numbers up to 64-bits + b
+    sprintf(numstr, "b%d", (g_IdCounter++));
+    g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, numstr);
     g_CurrentBlock->intid = MOVING_BLOCK;
     g_CurrentBlock->lastMatrix = Matrix_Translate(g_CurrentPositionX, g_CurrentPositionY, g_CurrentPositionZ)
                * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
@@ -400,8 +403,7 @@ void ProcessGameTick()
   // Tick control
   if (!g_IsPaused && ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval))
   {
-    printf("Tick.\n");
-    printf("%d\n", g_VirtualScene.size());
+    printf("Tick. (%d)\n", g_VirtualScene.size());
 
     g_LastTick = clock();
     g_CurrentPositionY -= (1 * g_BlockResize);
@@ -418,7 +420,9 @@ void ProcessGameTick()
 
       BlockModel *blockmodel = getRandomBlockModel();
       ComputeNormals(blockmodel);
-      g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, "b" + (g_IdCounter++));
+      char numstr[22]; // enough to hold all numbers up to 64-bits + b
+      sprintf(numstr, "b%d", (g_IdCounter++));
+      g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, numstr);
       g_CurrentBlock->intid = MOVING_BLOCK;
     }
   }
@@ -532,6 +536,19 @@ void LoadShadersFromFiles()
     view_uniform            = glGetUniformLocation(program_id, "view"); // Variável da matriz "view" em shader_vertex.glsl
     projection_uniform      = glGetUniformLocation(program_id, "projection"); // Variável da matriz "projection" em shader_vertex.glsl
     object_id_uniform       = glGetUniformLocation(program_id, "object_id"); // Variável "object_id" em shader_fragment.glsl
+    bbox_min_uniform        = glGetUniformLocation(program_id, "bbox_min");
+    bbox_max_uniform        = glGetUniformLocation(program_id, "bbox_max");
+
+    // Variáveis em "shader_fragment.glsl" para acesso das imagens de textura
+    glUseProgram(program_id);
+    glUniform1i(glGetUniformLocation(program_id, "TextureImage0"), 0);
+    glUniform1i(glGetUniformLocation(program_id, "TextureImage1"), 1);
+    glUniform1i(glGetUniformLocation(program_id, "TextureImage2"), 2);
+    glUniform1i(glGetUniformLocation(program_id, "TextureImage3"), 3);
+    glUniform1i(glGetUniformLocation(program_id, "TextureImage4"), 4);
+    glUniform1i(glGetUniformLocation(program_id, "TextureImage5"), 5);
+    glUniform1i(glGetUniformLocation(program_id, "TextureImage6"), 6);
+    glUseProgram(0);
 }
 
 // Função que pega a matriz M e guarda a mesma no topo da pilha
@@ -638,6 +655,12 @@ SceneObject* BuildTrianglesAndAddToVirtualScene(ObjModel* model, std::string key
         size_t first_index = indices.size();
         size_t num_triangles = model->shapes[shape].mesh.num_face_vertices.size();
 
+        const float minval = std::numeric_limits<float>::min();
+        const float maxval = std::numeric_limits<float>::max();
+
+        glm::vec3 bbox_min = glm::vec3(maxval,maxval,maxval);
+        glm::vec3 bbox_max = glm::vec3(minval,minval,minval);
+
         for (size_t triangle = 0; triangle < num_triangles; ++triangle)
         {
             assert(model->shapes[shape].mesh.num_face_vertices[triangle] == 3);
@@ -657,6 +680,13 @@ SceneObject* BuildTrianglesAndAddToVirtualScene(ObjModel* model, std::string key
                 model_coefficients.push_back( vz ); // Z
                 model_coefficients.push_back( 1.0f ); // W
 
+                bbox_min.x = std::min(bbox_min.x, vx);
+                bbox_min.y = std::min(bbox_min.y, vy);
+                bbox_min.z = std::min(bbox_min.z, vz);
+                bbox_max.x = std::max(bbox_max.x, vx);
+                bbox_max.y = std::max(bbox_max.y, vy);
+                bbox_max.z = std::max(bbox_max.z, vz);
+
                 if ( model->attrib.normals.size() >= (size_t)3*idx.normal_index )
                 {
                     const float nx = model->attrib.normals[3*idx.normal_index + 0];
@@ -668,7 +698,7 @@ SceneObject* BuildTrianglesAndAddToVirtualScene(ObjModel* model, std::string key
                     normal_coefficients.push_back( 0.0f ); // W
                 }
 
-                if ( model->attrib.texcoords.size() >= (size_t)3*idx.texcoord_index )
+                if ( model->attrib.texcoords.size() >= (size_t)2*idx.texcoord_index )
                 {
                     const float u = model->attrib.texcoords[2*idx.texcoord_index + 0];
                     const float v = model->attrib.texcoords[2*idx.texcoord_index + 1];
@@ -685,6 +715,12 @@ SceneObject* BuildTrianglesAndAddToVirtualScene(ObjModel* model, std::string key
         theobject->num_indices    = last_index - first_index + 1; // Número de indices
         theobject->rendering_mode = GL_TRIANGLES;       // Índices correspondem ao tipo de rasterização GL_TRIANGLES.
         theobject->vertex_array_object_id = vertex_array_object_id;
+
+        theobject->bbox_min = bbox_min;
+        theobject->bbox_max = bbox_max;
+
+        printf("BBOX MIN: %5.2f %5.2f %5.2f\n", bbox_min.x, bbox_min.y, bbox_min.z);
+        printf("BBOX MAX: %5.2f %5.2f %5.2f\n", bbox_max.x, bbox_max.y, bbox_max.z);
 
         std::cout << (theobject->name) << std::endl;
 
