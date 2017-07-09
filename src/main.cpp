@@ -99,6 +99,7 @@ void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
 
 void ProcessGameTick();
 bool hasCollided();
+bool willCollide(Block* block, glm::mat4 movement);
 
 // Abaixo definimos variáveis globais utilizadas em várias funções do código.
 
@@ -151,7 +152,7 @@ GLuint g_NumLoadedTextures = 0;
 
 float g_LimitHX =  0.4f;
 float g_LimitLX = -0.4f;
-float g_LimitHY =  1.5f;
+float g_LimitHY =  1.6f;
 float g_LimitLY =  0.0f;
 float g_LimitHZ =  0.4f;
 float g_LimitLZ = -0.4f;
@@ -400,39 +401,92 @@ int main(int argc, char* argv[])
 
 void ProcessGameTick()
 {
-  // Tick control
-  if (!g_IsPaused && ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval))
-  {
-    printf("Tick. (%d)\n", g_VirtualScene.size());
-
-    g_LastTick = clock();
-    g_CurrentPositionY -= (1 * g_BlockResize);
-
-    // Se alcançou o fundo, gera nova
-    // Trocar por COLISAO COLISÃO
-    if (hasCollided())
+    // Tick control
+    if (!g_IsPaused && ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval))
     {
-      g_CurrentBlock->intid = STATIC_BLOCK;
+        printf("Tick. (%d)\n", g_VirtualScene.size());
 
-      g_CurrentPositionX = g_StartPositionX;
-      g_CurrentPositionY = g_StartPositionY;
-      g_CurrentPositionZ = g_StartPositionZ;
+        g_LastTick = clock();
 
-      BlockModel *blockmodel = getRandomBlockModel();
-      ComputeNormals(blockmodel);
-      char numstr[22]; // enough to hold all numbers up to 64-bits + b
-      sprintf(numstr, "b%d", (g_IdCounter++));
-      g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, numstr);
-      g_CurrentBlock->intid = MOVING_BLOCK;
+        // Se colidiu, gera nova
+        if (willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, -(1 * g_BlockResize), 0)))
+        {
+            g_CurrentBlock->intid = STATIC_BLOCK;
+
+            g_CurrentPositionX = g_StartPositionX;
+            g_CurrentPositionY = g_StartPositionY;
+            g_CurrentPositionZ = g_StartPositionZ;
+
+            BlockModel *blockmodel = getRandomBlockModel();
+            ComputeNormals(blockmodel);
+            char numstr[22]; // enough to hold all numbers up to 64-bits + b
+            sprintf(numstr, "b%d", (g_IdCounter++));
+            g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, numstr);
+            g_CurrentBlock->intid = MOVING_BLOCK;
+            g_CurrentBlock->lastMatrix = Matrix_Translate(g_CurrentPositionX, g_CurrentPositionY, g_CurrentPositionZ)
+                       * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
+
+            // GAME OVER
+            if (willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix))
+            {
+                g_IsPaused = true;
+                printf("GAME OVER!");
+            }
+        }
+        else
+        {
+            g_CurrentPositionY -= (1 * g_BlockResize);
+        }
     }
-  }
 }
 
-bool hasCollided()
+bool willCollide(Block* block, glm::mat4 movement)
 {
-  if (g_CurrentPositionY < g_LimitLY)
-    return true;
-  else
+    glm::vec4 blkmin = glm::vec4(block->bbox_min, 1);
+    glm::vec4 blkmax = glm::vec4(block->bbox_max, 1);
+
+    blkmin = movement * blkmin;
+    blkmax = movement * blkmax;
+
+    printf("WORLD BBOX MIN: %5.2f %5.2f %5.2f\n", blkmin.x, blkmin.y, blkmin.z);
+    printf("WORLD BBOX MAX: %5.2f %5.2f %5.2f\n", blkmax.x, blkmax.y, blkmax.z);
+
+    // Testa contra planos
+    if (
+         blkmin.x < g_LimitLX || blkmax.x > g_LimitHX
+      || blkmin.y < g_LimitLY || blkmax.y > g_LimitHY
+      || blkmin.z < g_LimitLZ || blkmax.z > g_LimitHZ
+      )
+    {
+        printf("Collision between: %s and plane\n", block->name.c_str());
+        return true;
+    }
+
+    // Testa contra outros blocos
+    for(auto const &it : g_VirtualScene)
+    {
+        SceneObject *obj = it.second;
+
+        if (obj->name != block->name && obj->name != "plane")
+        {
+            glm::vec4 objmin = glm::vec4(obj->bbox_min, 1);
+            glm::vec4 objmax = glm::vec4(obj->bbox_max, 1);
+
+            objmin = obj->lastMatrix * objmin;
+            objmax = obj->lastMatrix * objmax;
+
+            if (
+                 ((blkmin.x <= objmin.x && objmin.x <= blkmax.x) || (objmin.x <= blkmin.x && blkmin.x <= objmax.x)) &&
+                 ((blkmin.y <= objmin.y && objmin.y <= blkmax.y) || (objmin.y <= blkmin.y && blkmin.y <= objmax.y)) &&
+                 ((blkmin.z <= objmin.z && objmin.z <= blkmax.z) || (objmin.z <= blkmin.z && blkmin.z <= objmax.z))
+               )
+            {
+                printf("Collision between: %s, %s\n", block->name.c_str(), obj->name.c_str());
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -719,10 +773,7 @@ SceneObject* BuildTrianglesAndAddToVirtualScene(ObjModel* model, std::string key
         theobject->bbox_min = bbox_min;
         theobject->bbox_max = bbox_max;
 
-        printf("BBOX MIN: %5.2f %5.2f %5.2f\n", bbox_min.x, bbox_min.y, bbox_min.z);
-        printf("BBOX MAX: %5.2f %5.2f %5.2f\n", bbox_max.x, bbox_max.y, bbox_max.z);
-
-        std::cout << (theobject->name) << std::endl;
+        //std::cout << (theobject->name) << std::endl;
 
         g_VirtualScene[key] = theobject;
     }
@@ -1112,19 +1163,19 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mod)
 
     switch (g_LastMove) {
       case XLEFT:
-        if (g_CurrentPositionX > g_LimitLX)
+        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(-(1 * g_BlockResize), 0, 0)))
           g_CurrentPositionX -= (1 * g_BlockResize);
         break;
       case XRIGHT:
-        if (g_CurrentPositionX < (g_LimitHX - (1 * g_BlockResize)))
+        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(+(1 * g_BlockResize), 0, 0)))
           g_CurrentPositionX += (1 * g_BlockResize);
         break;
       case ZLEFT:
-        if (g_CurrentPositionZ > g_LimitLZ)
+        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, 0, -(1 * g_BlockResize))))
           g_CurrentPositionZ -= (1 * g_BlockResize);
         break;
       case ZRIGHT:
-        if (g_CurrentPositionZ < (g_LimitHZ - (1 * g_BlockResize)))
+        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, 0, +(1 * g_BlockResize))))
           g_CurrentPositionZ += (1 * g_BlockResize);
         break;
       default:

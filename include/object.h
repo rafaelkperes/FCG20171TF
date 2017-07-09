@@ -54,7 +54,7 @@ struct SceneObject
     glm::vec3    bbox_min; // Axis-Aligned Bounding Box do objeto
     glm::vec3    bbox_max;
     glm::mat4    lastMatrix;
-    int          intid;    
+    int          intid;
 };
 
 #endif
