@@ -87,6 +87,7 @@ void TextRendering_ShowModelViewProjection(GLFWwindow* window, glm::mat4 project
 void TextRendering_ShowEulerAngles(GLFWwindow* window);
 void TextRendering_ShowProjection(GLFWwindow* window);
 void TextRendering_ShowFramesPerSecond(GLFWwindow* window);
+void TextRendering_ShowScore(GLFWwindow* window);
 
 // Funções callback para comunicação com o sistema operacional e interação do
 // usuário. Veja mais comentários nas definições das mesmas, abaixo.
@@ -98,8 +99,15 @@ void CursorPosCallback(GLFWwindow* window, double xpos, double ypos);
 void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
 
 void ProcessGameTick();
+void CheckAndClearLines();
+void newBlock();
+void newGame();
+
+void removeBlocks(std::stack<std::string>, bool);
+void moveEmDown(float py);
 bool hasCollided();
 bool willCollide(Block* block, glm::mat4 movement);
+Block* willCollideWith(Block* block, glm::mat4 movement, bool checkPlane);
 
 // Abaixo definimos variáveis globais utilizadas em várias funções do código.
 
@@ -134,6 +142,13 @@ float g_CameraTheta = 0.0f; // Ângulo no plano ZX em relação ao eixo Z
 float g_CameraPhi = 0.0f;   // Ângulo em relação ao eixo Y
 float g_CameraDistance = 3.5f; // Distância da câmera para a origem
 
+float g_LookAtTheta = 0.0f;
+float g_LookAtPhi   = 0.0f;
+
+float g_CameraOffsetX = 0.0f;
+float g_CameraOffsetY = 0.0f;
+float g_CameraOffsetZ = 0.0f;
+
 // Variáveis que controlam rotação do antebraço
 float g_ForearmAngleZ = 0.0f;
 float g_ForearmAngleX = 0.0f;
@@ -150,14 +165,20 @@ bool g_ShowInfoText = true;
 
 GLuint g_NumLoadedTextures = 0;
 
-float g_LimitHX =  0.4f;
-float g_LimitLX = -0.4f;
-float g_LimitHY =  1.6f;
+float g_BlockPerX = 4;
+float g_BlockPerY = 16;
+float g_BlockPerZ = 4;
+double g_BlockResize = 0.1f;
+
+float g_LimitHX =  (g_BlockPerX * g_BlockResize) / 2;
+float g_LimitLX = -(g_BlockPerX * g_BlockResize) / 2;
+float g_LimitHY =  (g_BlockPerY * g_BlockResize);
 float g_LimitLY =  0.0f;
-float g_LimitHZ =  0.4f;
-float g_LimitLZ = -0.4f;
+float g_LimitHZ =  (g_BlockPerZ * g_BlockResize) / 2;
+float g_LimitLZ = -(g_BlockPerZ * g_BlockResize) / 2;;
 
 float g_BlockBorder = 0.005f;
+
 
 float g_StartPositionX = 0.0f;
 float g_StartPositionY = 1.5f;
@@ -167,14 +188,17 @@ float g_CurrentPositionX = g_StartPositionX;
 float g_CurrentPositionY = g_StartPositionY;
 float g_CurrentPositionZ = g_StartPositionZ;
 
-double g_LastTick    = 0.0f;
-double g_Interval    = 0.25f;
-double g_BlockResize = 0.1f;
+double g_LastTick     = 0.0f;
+double g_LastTickM    = 0.0f;
+double g_Interval     = 0.10f;
+double g_MoveInterval = g_Interval;
 
 Block *g_CurrentBlock  = NULL;
 MOVE   g_LastMove      = NONE;
 int    g_IdCounter     = 0;
 bool   g_IsPaused      = true;
+bool   g_IsOver        = false;
+long   g_Score         = 0;
 
 // Variáveis que definem um programa de GPU (shaders). Veja função LoadShadersFromFiles().
 GLuint vertex_shader_id;
@@ -263,22 +287,7 @@ int main(int argc, char* argv[])
     LoadTextureImage("../../data/crate.jpg");      // TextureImage5
     LoadTextureImage("../../data/portal.jpg");     // TextureImage6
 
-    // Construímos a representação de objetos geométricos através de malhas de triângulos
-    BlockModel *blockmodel = getRandomBlockModel();
-    ComputeNormals(blockmodel);
-    char numstr[22]; // enough to hold all numbers up to 64-bits + b
-    sprintf(numstr, "b%d", (g_IdCounter++));
-    g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, numstr);
-    g_CurrentBlock->intid = MOVING_BLOCK;
-    g_CurrentBlock->lastMatrix = Matrix_Translate(g_CurrentPositionX, g_CurrentPositionY, g_CurrentPositionZ)
-               * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
-
-    ObjModel planemodel = ObjModel("../../data/cube.obj");
-    ComputeNormals(&planemodel);
-    SceneObject* plane  = BuildTrianglesAndAddToVirtualScene(&planemodel, "plane");
-    plane->intid = PLANE;
-    plane->lastMatrix   = Matrix_Translate(g_LimitLX, g_LimitLY - 0.1, g_LimitLZ)
-                        * Matrix_Scale((g_LimitHX - g_LimitLX), 0.1, (g_LimitHZ - g_LimitLZ));
+    newGame();
 
     // Inicializamos o código para renderização de texto.
     TextRendering_Init();
@@ -322,16 +331,84 @@ int main(int argc, char* argv[])
         // controladas pelo mouse do usuário. Veja as funções CursorPosCallback()
         // e ScrollCallback().
         float r = g_CameraDistance;
-        float y = r*sin(g_CameraPhi);
-        float z = r*cos(g_CameraPhi)*cos(g_CameraTheta);
-        float x = r*cos(g_CameraPhi)*sin(g_CameraTheta);
+        float y = r*sin(g_CameraPhi) + g_CameraOffsetY;
+        float z = r*cos(g_CameraPhi)*cos(g_CameraTheta) + g_CameraOffsetZ;
+        float x = r*cos(g_CameraPhi)*sin(g_CameraTheta) + g_CameraOffsetX;
+
+        float yv = -r*sin(g_CameraPhi - g_LookAtPhi) + y;
+        float zv = -r*cos(g_CameraPhi - g_LookAtPhi)*cos(g_CameraTheta - g_LookAtTheta) + z;
+        float xv = -r*cos(g_CameraPhi - g_LookAtPhi)*sin(g_CameraTheta - g_LookAtTheta) + x;
 
         // Abaixo definimos as varáveis que efetivamente definem a câmera virtual.
         // Veja slide 159 do documento "Aula_08_Sistemas_de_Coordenadas.pdf".
-        glm::vec4 camera_position_c  = glm::vec4(x,y,z,1.0f); // Ponto "c", centro da câmera
-        glm::vec4 camera_lookat_l    = glm::vec4(0.0f,0.0f,0.0f,1.0f); // Ponto "l", para onde a câmera (look-at) estará sempre olhando
+        glm::vec4 camera_position_c  = glm::vec4(x, y, z,  1.0f); // Ponto "c", centro da câmera
+        glm::vec4 camera_lookat_l    = glm::vec4(xv, yv, zv, 1.0f); // Ponto "l", para onde a câmera (look-at) estará sempre olhando
         glm::vec4 camera_view_vector = camera_lookat_l - camera_position_c; // Vetor "view", sentido para onde a câmera está virada
         glm::vec4 camera_up_vector   = glm::vec4(0.0f,1.0f,0.0f,0.0f); // Vetor "up"
+
+        #define C_PI  3.14159265358979323846
+        glm::vec4 camera_side_vector = Matrix_Rotate_Y(C_PI/2) * camera_view_vector; // Vetor "view para o lado esquerdo"
+
+        switch (g_LastMove) {
+            case XLEFT:
+              if (g_IsPaused)
+              {
+                  g_CameraOffsetX += 0.01 * camera_side_vector.x;
+                  //g_CameraOffsetY += 0.01 * camera_side_vector.y;
+                  g_CameraOffsetZ += 0.01 * camera_side_vector.z;
+              }
+              else if (((double)(clock() - g_LastTickM) / CLOCKS_PER_SEC >= g_MoveInterval)
+                    && !willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(-(1 * g_BlockResize), 0, 0)))
+              {
+                  g_LastTickM = clock();
+                  g_CurrentPositionX -= (1 * g_BlockResize);
+              }
+              break;
+            case XRIGHT:
+              if (g_IsPaused)
+              {
+                  g_CameraOffsetX -= 0.01 * camera_side_vector.x;
+                  //g_CameraOffsetY -= 0.01 * camera_side_vector.y;
+                  g_CameraOffsetZ -= 0.01 * camera_side_vector.z;
+              }
+              else if (((double)(clock() - g_LastTickM) / CLOCKS_PER_SEC >= g_MoveInterval)
+                    && !willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(+(1 * g_BlockResize), 0, 0)))
+              {
+                  g_LastTickM = clock();
+                  g_CurrentPositionX += (1 * g_BlockResize);
+              }
+              break;
+            case ZLEFT:
+              if (g_IsPaused)
+              {
+                  g_CameraOffsetX += 0.01 * camera_view_vector.x;
+                  //g_CameraOffsetY += 0.01 * camera_view_vector.y;
+                  g_CameraOffsetZ += 0.01 * camera_view_vector.z;
+              }
+              else if (((double)(clock() - g_LastTickM) / CLOCKS_PER_SEC >= g_MoveInterval)
+                    && !willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, 0, -(1 * g_BlockResize))))
+              {
+                  g_LastTickM = clock();
+                  g_CurrentPositionZ -= (1 * g_BlockResize);
+              }
+              break;
+            case ZRIGHT:
+              if (g_IsPaused)
+              {
+                  g_CameraOffsetX -= 0.01 * camera_view_vector.x;
+                  //g_CameraOffsetY -= 0.01 * camera_view_vector.y;
+                  g_CameraOffsetZ -= 0.01 * camera_view_vector.z;
+              }
+              else if (((double)(clock() - g_LastTickM) / CLOCKS_PER_SEC >= g_MoveInterval)
+                    && !willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, 0, +(1 * g_BlockResize))))
+              {
+                  g_LastTickM = clock();
+                  g_CurrentPositionZ += (1 * g_BlockResize);
+              }
+              break;
+            default:
+              break;
+        }
 
         // Computamos a matriz "View" utilizando os parâmetros da câmera para
         // definir o sistema de coordenadas da câmera.  Veja slide 162 do
@@ -380,7 +457,6 @@ int main(int argc, char* argv[])
         glUniformMatrix4fv(model_uniform, 1 , GL_FALSE , glm::value_ptr(model));
         glUniform1i(object_id_uniform, g_CurrentBlock->intid);
         g_CurrentBlock->lastMatrix = model;
-        DrawVirtualObject((g_CurrentBlock->name).c_str());
 
         DrawAllObjects();
 
@@ -388,6 +464,7 @@ int main(int argc, char* argv[])
 
         TextRendering_ShowProjection(window);
         TextRendering_ShowFramesPerSecond(window);
+        TextRendering_ShowScore(window);
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
@@ -399,10 +476,44 @@ int main(int argc, char* argv[])
     return 0;
 }
 
+void newGame()
+{
+    g_IsOver = false;
+    g_IsPaused = true;
+
+    g_VirtualScene.clear();
+
+    ObjModel planemodel = ObjModel("../../data/cube.obj");
+    ComputeNormals(&planemodel);
+    SceneObject* plane  = BuildTrianglesAndAddToVirtualScene(&planemodel, "plane");
+    plane->intid = PLANE;
+    plane->lastMatrix   = Matrix_Translate(g_LimitLX, g_LimitLY - (g_BlockBorder + 0.1), g_LimitLZ)
+                        * Matrix_Scale((g_LimitHX - g_LimitLX), 0.1, (g_LimitHZ - g_LimitLZ));
+    newBlock();
+}
+
+void newBlock()
+{
+    // Adiciona novo bloco
+    g_CurrentPositionX = g_StartPositionX;
+    g_CurrentPositionY = g_StartPositionY;
+    g_CurrentPositionZ = g_StartPositionZ;
+
+    BlockModel *blockmodel = getRandomBlockModel();
+    ComputeNormals(blockmodel);
+    char numstr[22]; // enough to hold all numbers up to 64-bits + b
+    sprintf(numstr, "b%d", (g_IdCounter++));
+    g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, numstr);
+    g_CurrentBlock->intid = MOVING_BLOCK;
+    g_CurrentBlock->lastMatrix = Matrix_Translate(g_CurrentPositionX, g_CurrentPositionY, g_CurrentPositionZ)
+               * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
+}
+
 void ProcessGameTick()
 {
     // Tick control
-    if (!g_IsPaused && ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval))
+    if (!g_IsPaused && ((double)(clock() - g_LastTick) / CLOCKS_PER_SEC >= g_Interval)
+        && g_LastMove == NONE)
     {
         printf("Tick. (%d)\n", g_VirtualScene.size());
 
@@ -411,25 +522,19 @@ void ProcessGameTick()
         // Se colidiu, gera nova
         if (willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, -(1 * g_BlockResize), 0)))
         {
+            // Checa de fechou uma linha/plano
+            CheckAndClearLines();
+
+            // Muda bloco antigo para estático
             g_CurrentBlock->intid = STATIC_BLOCK;
 
-            g_CurrentPositionX = g_StartPositionX;
-            g_CurrentPositionY = g_StartPositionY;
-            g_CurrentPositionZ = g_StartPositionZ;
-
-            BlockModel *blockmodel = getRandomBlockModel();
-            ComputeNormals(blockmodel);
-            char numstr[22]; // enough to hold all numbers up to 64-bits + b
-            sprintf(numstr, "b%d", (g_IdCounter++));
-            g_CurrentBlock = BuildTrianglesAndAddToVirtualScene(blockmodel, numstr);
-            g_CurrentBlock->intid = MOVING_BLOCK;
-            g_CurrentBlock->lastMatrix = Matrix_Translate(g_CurrentPositionX, g_CurrentPositionY, g_CurrentPositionZ)
-                       * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
+            newBlock();
 
             // GAME OVER
             if (willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix))
             {
                 g_IsPaused = true;
+                g_IsOver   = true;
                 printf("GAME OVER!");
             }
         }
@@ -440,7 +545,126 @@ void ProcessGameTick()
     }
 }
 
+void CheckAndClearLines()
+{
+    std::stack<std::string> blocks;
+    Block *removal = NULL;
+    Block fakeBlock =  *g_CurrentBlock;
+
+    fakeBlock.name  = "stub";
+    fakeBlock.intid = MOVING_BLOCK;
+
+    bool fullLine;
+    bool hasRemoved;
+    int removeCount = 0;
+
+    do
+    {
+        hasRemoved = false;
+
+        for (float py = g_LimitLY; py < g_LimitHY; py += (1 * g_BlockResize))
+        {
+            // Anda de plano Y em Plano Y
+            fullLine = true;
+            for (float px = g_LimitLX; px < g_LimitHX; px += (1 * g_BlockResize))
+            {
+                for (float pz = g_LimitLZ; pz < g_LimitHZ; pz += (1 * g_BlockResize))
+                {
+                    fakeBlock.lastMatrix = Matrix_Translate(px, py, pz)
+                             * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);
+                    removal = willCollideWith(&fakeBlock, fakeBlock.lastMatrix, false);
+                    if(removal == NULL)
+                    {
+                        fullLine = false;
+                        break;
+                    }
+                    else if (removal != NULL)
+                    {
+                        //printf("%s", removal->name.c_str());
+                        blocks.push(removal->name);
+                    }
+                }
+
+                if (!fullLine)
+                    break;
+            }
+            if (fullLine)
+            {
+                // Limpa a linha/plano
+                removeBlocks(blocks, false);
+
+                hasRemoved = true;
+                removeCount++;
+
+                g_Score += 100 * removeCount * g_BlockPerX * g_BlockPerZ * (10/g_BlockPerY);
+                moveEmDown(py);
+
+                break;
+            }
+            else
+            {
+                // Limpa o stack
+                while(!blocks.empty())
+                    blocks.pop();
+            }
+        }
+    } while (hasRemoved);
+}
+
+void moveEmDown(float py)
+{
+    for(auto const &it : g_VirtualScene)
+    {
+        SceneObject *obj = it.second;
+
+        if (obj->name != "plane")
+        {
+            glm::vec4 pos = glm::vec4(obj->bbox_min, 1);
+            pos = obj->lastMatrix * pos;
+
+            if (pos.y > py)
+            {
+                printf("MOVE %s DOWN ", obj->name.c_str());
+                obj->lastMatrix = Matrix_Translate(pos.x, pos.y - (1 * g_BlockResize), pos.z)
+                                * Matrix_Scale(g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder, g_BlockResize - g_BlockBorder);;
+            }
+        }
+    }
+}
+
+void removeBlocks(std::stack<std::string> blocks, bool removeAll)
+{
+    if (removeAll)
+    {
+        for (auto const &it : g_VirtualScene)
+        {
+            std::string str = it.first;
+            SceneObject *obj = it.second;
+
+            if (obj->name != "plane")
+            {
+                g_VirtualScene.erase(str);
+            }
+        }
+    }
+    else
+    {
+        // Remove blocks on parameters
+        while (!blocks.empty())
+        {
+            std::string name = blocks.top();
+            g_VirtualScene.erase(name);
+            blocks.pop();
+        }
+    }
+}
+
 bool willCollide(Block* block, glm::mat4 movement)
+{
+    return (willCollideWith(block, movement, true) != NULL);
+}
+
+Block* willCollideWith(Block* block, glm::mat4 movement, bool checkPlane)
 {
     glm::vec4 blkmin = glm::vec4(block->bbox_min, 1);
     glm::vec4 blkmax = glm::vec4(block->bbox_max, 1);
@@ -448,18 +672,18 @@ bool willCollide(Block* block, glm::mat4 movement)
     blkmin = movement * blkmin;
     blkmax = movement * blkmax;
 
-    printf("WORLD BBOX MIN: %5.2f %5.2f %5.2f\n", blkmin.x, blkmin.y, blkmin.z);
-    printf("WORLD BBOX MAX: %5.2f %5.2f %5.2f\n", blkmax.x, blkmax.y, blkmax.z);
+    //printf("WORLD BBOX MIN: %5.2f %5.2f %5.2f\n", blkmin.x, blkmin.y, blkmin.z);
+    //printf("WORLD BBOX MAX: %5.2f %5.2f %5.2f\n", blkmax.x, blkmax.y, blkmax.z);
 
     // Testa contra planos
-    if (
-         blkmin.x < g_LimitLX || blkmax.x > g_LimitHX
+    if (checkPlane &&
+        (blkmin.x < g_LimitLX || blkmax.x > g_LimitHX
       || blkmin.y < g_LimitLY || blkmax.y > g_LimitHY
-      || blkmin.z < g_LimitLZ || blkmax.z > g_LimitHZ
+      || blkmin.z < g_LimitLZ || blkmax.z > g_LimitHZ)
       )
     {
-        printf("Collision between: %s and plane\n", block->name.c_str());
-        return true;
+        //printf("Collision between: %s and plane\n", block->name.c_str());
+        return g_VirtualScene["plane"];
     }
 
     // Testa contra outros blocos
@@ -482,12 +706,12 @@ bool willCollide(Block* block, glm::mat4 movement)
                )
             {
                 printf("Collision between: %s, %s\n", block->name.c_str(), obj->name.c_str());
-                return true;
+                return obj;
             }
         }
     }
 
-    return false;
+    return NULL;
 }
 
 void DrawAllObjects()
@@ -1074,24 +1298,43 @@ void CursorPosCallback(GLFWwindow* window, double xpos, double ypos)
         float dx = xpos - g_LastCursorPosX;
         float dy = ypos - g_LastCursorPosY;
 
-        // Atualizamos parâmetros da câmera com os deslocamentos
-        g_CameraTheta -= 0.01f*dx;
-        g_CameraPhi   += 0.01f*dy;
+        if (!g_IsPaused)
+        {
+            // Atualizamos parâmetros da câmera com os deslocamentos
+            g_CameraTheta -= 0.01f*dx;
+            g_CameraPhi   += 0.01f*dy;
 
-        // Em coordenadas esféricas, o ângulo phi deve ficar entre -pi/2 e +pi/2.
-        float phimax = 3.141592f/2;
-        float phimin = -phimax;
+            // Em coordenadas esféricas, o ângulo phi deve ficar entre -pi/2 e +pi/2.
+            float phimax = 3.141592f/2;
+            float phimin = -phimax;
 
-        if (g_CameraPhi > phimax)
-            g_CameraPhi = phimax;
+            if (g_CameraPhi > phimax)
+                g_CameraPhi = phimax;
 
-        if (g_CameraPhi < phimin)
-            g_CameraPhi = phimin;
+            if (g_CameraPhi < phimin)
+                g_CameraPhi = phimin;
 
-        // Atualizamos as variáveis globais para armazenar a posição atual do
-        // cursor como sendo a última posição conhecida do cursor.
-        g_LastCursorPosX = xpos;
-        g_LastCursorPosY = ypos;
+            // Atualizamos as variáveis globais para armazenar a posição atual do
+            // cursor como sendo a última posição conhecida do cursor.
+            g_LastCursorPosX = xpos;
+            g_LastCursorPosY = ypos;
+        }
+        else
+        {
+            g_LookAtTheta -= 0.0005f*dx;
+            g_LookAtPhi   += 0.0005f*dy;
+
+            // Em coordenadas esféricas, o ângulo phi deve ficar entre -pi/2 e +pi/2.
+            float phimax = 3.141592f/2;
+            float phimin = -phimax;
+
+            if (g_LookAtPhi > phimax)
+                g_LookAtPhi = phimax;
+
+            if (g_LookAtPhi < phimin)
+                g_LookAtPhi = phimin;
+        }
+
     }
 
     if (g_RightMouseButtonPressed)
@@ -1132,10 +1375,13 @@ void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
 {
     // Atualizamos a distância da câmera para a origem utilizando a
     // movimentação da "rodinha", simulando um ZOOM.
-    g_CameraDistance -= 0.1f*yoffset;
+    if (!g_IsPaused)
+    {
+        g_CameraDistance -= 0.1f*yoffset;
 
-    if (g_CameraDistance < 0.0f)
-        g_CameraDistance = 0.0f;
+        if (g_CameraDistance < 0.0f)
+            g_CameraDistance = 0.0f;
+    }
 }
 
 // Definição da função que será chamada sempre que o usuário pressionar alguma
@@ -1143,7 +1389,11 @@ void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
 void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mod)
 {
     if (key == GLFW_KEY_ENTER && action == GLFW_PRESS)
+    {
         g_IsPaused = !g_IsPaused;
+        if (g_IsOver)
+            newGame();
+    }
 
     // Se o usuário pressionar a tecla ESC, fechamos a janela.
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && g_LastMove == NONE)
@@ -1155,51 +1405,25 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mod)
     if (key == GLFW_KEY_A && action == GLFW_PRESS && g_LastMove == NONE)
         g_LastMove = XLEFT;
 
+
     if (key == GLFW_KEY_S && action == GLFW_PRESS && g_LastMove == NONE)
         g_LastMove = ZRIGHT;
+
 
     if (key == GLFW_KEY_D && action == GLFW_PRESS && g_LastMove == NONE)
         g_LastMove = XRIGHT;
 
-    switch (g_LastMove) {
-      case XLEFT:
-        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(-(1 * g_BlockResize), 0, 0)))
-          g_CurrentPositionX -= (1 * g_BlockResize);
-        break;
-      case XRIGHT:
-        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(+(1 * g_BlockResize), 0, 0)))
-          g_CurrentPositionX += (1 * g_BlockResize);
-        break;
-      case ZLEFT:
-        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, 0, -(1 * g_BlockResize))))
-          g_CurrentPositionZ -= (1 * g_BlockResize);
-        break;
-      case ZRIGHT:
-        if (!willCollide(g_CurrentBlock, g_CurrentBlock->lastMatrix * Matrix_Translate(0, 0, +(1 * g_BlockResize))))
-          g_CurrentPositionZ += (1 * g_BlockResize);
-        break;
-      default:
-        break;
-    }
-    g_LastMove = NONE;
-
     // Se o usuário apertar a tecla P, utilizamos projeção perspectiva.
     if (key == GLFW_KEY_P && action == GLFW_PRESS)
-    {
         g_UsePerspectiveProjection = true;
-    }
 
     // Se o usuário apertar a tecla O, utilizamos projeção ortográfica.
     if (key == GLFW_KEY_O && action == GLFW_PRESS)
-    {
         g_UsePerspectiveProjection = false;
-    }
 
     // Se o usuário apertar a tecla H, fazemos um "toggle" do texto informativo mostrado na tela.
     if (key == GLFW_KEY_H && action == GLFW_PRESS)
-    {
         g_ShowInfoText = !g_ShowInfoText;
-    }
 
     // Se o usuário apertar a tecla R, recarregamos os shaders dos arquivos "shader_fragment.glsl" e "shader_vertex.glsl".
     if (key == GLFW_KEY_R && action == GLFW_PRESS)
@@ -1208,6 +1432,9 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mod)
         fprintf(stdout,"Shaders recarregados!\n");
         fflush(stdout);
     }
+
+    if (action == GLFW_RELEASE)
+      g_LastMove = NONE;
 }
 
 // Definimos o callback para impressão de erros da GLFW no terminal
@@ -1310,6 +1537,22 @@ void TextRendering_ShowFramesPerSecond(GLFWwindow* window)
     float charwidth = TextRendering_CharWidth(window);
 
     TextRendering_PrintString(window, buffer, 1.0f-(numchars + 1)*charwidth, 1.0f-lineheight, 1.0f);
+}
+
+// Escrevemos na tela o número de quadros renderizados por segundo (frames per
+// second).
+void TextRendering_ShowScore(GLFWwindow* window)
+{
+    // Variáveis estáticas (static) mantém seus valores entre chamadas
+    // subsequentes da função!
+    static char numstr[18];
+
+    int numchars = snprintf(numstr, 18, "Score: %010ld", g_Score);
+
+    float lineheight = TextRendering_LineHeight(window);
+    float charwidth = TextRendering_CharWidth(window);
+
+    TextRendering_PrintString(window, numstr, 0.0f-((numchars + 1)*charwidth/2), 1.0f-lineheight, 1.0f);
 }
 
 // Função para debugging: imprime no terminal todas informações de um modelo
