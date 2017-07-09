@@ -140,7 +140,7 @@ bool g_MiddleMouseButtonPressed = false; // Análogo para botão do meio do mous
 // renderização.
 float g_CameraTheta = 0.0f; // Ângulo no plano ZX em relação ao eixo Z
 float g_CameraPhi = 0.0f;   // Ângulo em relação ao eixo Y
-float g_CameraDistance = 3.5f; // Distância da câmera para a origem
+float g_CameraDistance = 2.5f; // Distância da câmera para a origem
 
 float g_LookAtTheta = 0.0f;
 float g_LookAtPhi   = 0.0f;
@@ -1420,6 +1420,19 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mod)
     // Se o usuário apertar a tecla O, utilizamos projeção ortográfica.
     if (key == GLFW_KEY_O && action == GLFW_PRESS)
         g_UsePerspectiveProjection = false;
+
+    if (key == GLFW_KEY_R && action == GLFW_PRESS)
+    {
+        // Reset camera
+        g_CameraPhi = 0.0f;
+        g_CameraTheta = 0.0f;
+        g_LookAtPhi = 0.0f;
+        g_LookAtTheta = 0.0f;
+        g_CameraOffsetX = 0.0f;
+        g_CameraOffsetY = 0.0f;
+        g_CameraOffsetZ = 0.0f;
+        g_CameraDistance = 2.5f; // Distância da câmera para a origem
+    }
 
     // Se o usuário apertar a tecla H, fazemos um "toggle" do texto informativo mostrado na tela.
     if (key == GLFW_KEY_H && action == GLFW_PRESS)
